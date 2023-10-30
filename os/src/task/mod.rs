@@ -14,9 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::{get_time_ms};
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -39,9 +40,31 @@ pub struct TaskManager {
     inner: UPSafeCell<TaskManagerInner>,
 }
 
+///
+pub struct Taskinfo2{
+    ///
+    pub timefir:usize,
+    /// 
+    pub calltime :[u32;MAX_SYSCALL_NUM],
+    ///
+    pub time :usize
+}
+
+impl Copy for Taskinfo2 {}
+impl Clone for Taskinfo2 {
+    fn clone(&self) -> Self {
+        Taskinfo2 {
+            timefir:self.timefir.clone(),
+            calltime: self.calltime.clone(),
+            time:self.time.clone()
+        }
+    }
+}
 /// Inner of Task Manager
 pub struct TaskManagerInner {
     /// task list
+    task_info:[Taskinfo2;MAX_APP_NUM],
+    
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
@@ -55,6 +78,7 @@ lazy_static! {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
         }; MAX_APP_NUM];
+        let taskinfo = [Taskinfo2{timefir:0,calltime:[0;MAX_SYSCALL_NUM],time:0};MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
@@ -63,6 +87,7 @@ lazy_static! {
             num_app,
             inner: unsafe {
                 UPSafeCell::new(TaskManagerInner {
+                    task_info:taskinfo,
                     tasks,
                     current_task: 0,
                 })
@@ -78,9 +103,9 @@ impl TaskManager {
     /// But in ch3, we load apps statically, so the first task is a real app.
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
-        let task0 = &mut inner.tasks[0];
-        task0.task_status = TaskStatus::Running;
-        let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
+  //      let task0 = &mut inner.tasks[0];
+        inner.tasks[0].task_status = TaskStatus::Running;
+        let next_task_cx_ptr = &inner.tasks[0].task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
@@ -168,4 +193,29 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+///
+pub fn sys_call(syscall_id:usize)
+{
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.task_info[current].calltime[syscall_id]+=1;
+    if inner.task_info[current].timefir!=0
+    {
+        inner.task_info[current].time = get_time_ms() as usize - inner.task_info[current].timefir;
+    }
+    else
+    {
+        inner.task_info[current].timefir = get_time_ms() as usize;  
+    }
+}
+
+///
+pub fn sys_info_back()->Taskinfo2
+{
+    let  inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    
+    return inner.task_info[current];
 }
